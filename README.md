@@ -128,6 +128,16 @@ npm start               # serves ../dist + WebSocket on :3000
 4. ไม่มี env var ต้องตั้ง (PORT จะถูก set อัตโนมัติ)
 5. Deploy → ได้ URL เช่น `m4kies-playlist-production.up.railway.app`
 
+### Render.com (มี `render.yaml` แล้ว)
+
+1. Push repo ขึ้น GitHub
+2. https://dashboard.render.com → **New +** → **Blueprint** → เลือก repo
+3. Render อ่าน `render.yaml` → กด **Apply** → จะสร้าง web service `m4kies-room` ที่ Singapore
+4. Build แรก ~10-15 นาที (Docker + yt-dlp download + npm install)
+5. ได้ URL `https://m4kies-room.onrender.com`
+
+> Free tier: 512 MB RAM, sleep หลัง idle 15 นาที (cold start 30-60s), 750 ชม./เดือน
+
 ### Fly.io
 
 ```powershell
@@ -139,6 +149,39 @@ fly deploy
 > ⚠ Dockerfile build context ต้องเป็น **repo root** (ไม่ใช่ `server/`) เพราะ stage แรกต้อง copy ทั้ง client (root) + server
 
 จะได้ URL `https://m4kies-playlist.fly.dev`
+
+---
+
+## YouTube anti-bot block บน cloud deploy
+
+**อาการ**: เปิด deploy แล้วใส่ลิงก์ YouTube → `ดึงเสียงจาก YouTube ไม่ได้: ERROR: [youtube] xxx: Sign in to confirm you're not a bot`
+
+**สาเหตุ**: YouTube flag datacenter IPs (Render/Fly/AWS/GCP) เป็น bot traffic แทบทันที — เซิร์ฟเวอร์ local จากที่บ้าน (residential IP) ไม่โดน
+
+**วิธีแก้ — ใส่ cookies ของ browser ที่ login YouTube อยู่**:
+
+1. **Export cookies** จาก browser:
+   - Chrome: install [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) extension
+   - Firefox: install [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) extension
+   - เปิด https://www.youtube.com ใน browser ที่ login Google account อยู่
+   - คลิก extension icon → **Export** → save เป็น `cookies.txt` (Netscape format)
+
+2. **Upload ขึ้น Render**:
+   - ไป Render dashboard → service `m4kies-room` → tab **Environment**
+   - เลื่อนหา **Secret Files** → **Add Secret File**
+   - Filename: `yt-cookies.txt` (ต้องชื่อนี้)
+   - Content: paste ทุกบรรทัดใน cookies.txt ที่ export มา
+   - Save → Render auto-redeploys
+
+3. **Verify**: หลัง redeploy เสร็จ ดู service logs ควรเห็น
+   ```
+   [yt-dlp] using cookies from /etc/secrets/yt-cookies.txt
+   ```
+   แล้วลองเล่นเพลง YouTube → ผ่านแล้ว
+
+**Cookies จะหมดอายุประมาณ 1-3 เดือน** — ถ้าเริ่มเจอ error อีกครั้ง export cookies ใหม่ + update Secret File
+
+> ทาง alternative: ใช้ Fly.io / Render ในภูมิภาคที่ YouTube cooler (สลับ region) หรือ residential proxy (เสียเงิน)
 
 ---
 

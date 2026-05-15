@@ -12,8 +12,45 @@
 //   - In Docker we install yt-dlp via apt/curl (see server/Dockerfile)
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 
 import type { SearchResult } from "./types.js";
+
+// =============================================================================
+// YouTube cookies (datacenter anti-bot bypass)
+//
+// Cloud IPs (Render, Fly, AWS, ...) trip YouTube's "Sign in to confirm you're
+// not a bot" check almost immediately. Passing a real browser's cookies via
+// `--cookies <file>` makes yt-dlp look like that browser, which sails through.
+//
+// On Render: upload your exported cookies.txt as a Secret File named
+// `yt-cookies.txt` → it appears at `/etc/secrets/yt-cookies.txt` at runtime.
+// On Fly / Docker: bind-mount any cookies.txt at /etc/secrets/yt-cookies.txt
+// (or override the path via YT_COOKIES_PATH env var).
+//
+// Local dev: usually unnecessary — residential IPs aren't flagged. If you
+// hit the same error locally, set YT_COOKIES_PATH=path\to\cookies.txt.
+//
+// The file is checked at startup; we don't try to hot-reload. Restart the
+// server after replacing the cookies file.
+// =============================================================================
+const YT_COOKIES_PATH =
+  process.env.YT_COOKIES_PATH || "/etc/secrets/yt-cookies.txt";
+const COOKIES_AVAILABLE = existsSync(YT_COOKIES_PATH);
+if (COOKIES_AVAILABLE) {
+  console.log(`[yt-dlp] using cookies from ${YT_COOKIES_PATH}`);
+} else {
+  console.log(
+    `[yt-dlp] no cookies at ${YT_COOKIES_PATH} — datacenter IPs may be rate-limited by YouTube`,
+  );
+}
+
+function ytDlpArgs(...rest: string[]): string[] {
+  const args: string[] = [];
+  if (COOKIES_AVAILABLE) args.push("--cookies", YT_COOKIES_PATH);
+  args.push(...rest);
+  return args;
+}
 
 export type YouTubeAudioInfo = {
   streamUrl: string;
@@ -151,12 +188,15 @@ function runYtDlpSearch(
     // `ytsearchN:query` → N results. `--flat-playlist` skips per-video
     // extraction so the call returns metadata only — ~10× faster than the
     // alternative. `-j` dumps one JSON object per line.
-    const proc = spawn("yt-dlp", [
-      `ytsearch${limit}:${query}`,
-      "--flat-playlist",
-      "-j",
-      "--no-warnings",
-    ]);
+    const proc = spawn(
+      "yt-dlp",
+      ytDlpArgs(
+        `ytsearch${limit}:${query}`,
+        "--flat-playlist",
+        "-j",
+        "--no-warnings",
+      ),
+    );
 
     let stdout = "";
     let stderr = "";
@@ -280,14 +320,17 @@ function runYtDlp(url: string): Promise<YouTubeAudioInfo> {
     // -f        → format selector: prefer m4a (iOS-friendly), fall back to
     //             any best audio-only, then any best with audio
     // --no-warnings / --no-playlist for clean output
-    const proc = spawn("yt-dlp", [
-      "-j",
-      "-f",
-      "bestaudio[ext=m4a]/bestaudio/best",
-      "--no-warnings",
-      "--no-playlist",
-      url,
-    ]);
+    const proc = spawn(
+      "yt-dlp",
+      ytDlpArgs(
+        "-j",
+        "-f",
+        "bestaudio[ext=m4a]/bestaudio/best",
+        "--no-warnings",
+        "--no-playlist",
+        url,
+      ),
+    );
 
     let stdout = "";
     let stderr = "";
