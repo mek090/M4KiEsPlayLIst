@@ -1,0 +1,27 @@
+# Fly.io app config. App name is filled in by `fly launch` (or you can edit
+# manually). Primary region is Singapore — lowest latency for Thai users.
+# Auto-stop on idle keeps usage inside the free allowance.
+
+primary_region = "sin"
+
+[build]
+  dockerfile = "server/Dockerfile"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

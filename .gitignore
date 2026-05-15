@@ -1,0 +1,18 @@
+node_modules/
+dist/
+dev-dist/
+.DS_Store
+*.log
+.env
+.env.local
+
+# Server build artefacts
+server/dist/
+server/node_modules/
+
+# Fly local state
+.fly/
+
+# Editors
+.vscode/
+.idea/

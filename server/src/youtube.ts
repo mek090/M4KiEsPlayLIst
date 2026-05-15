@@ -1,0 +1,384 @@
+// YouTube → direct audio URL resolver, backed by the `yt-dlp` binary.
+//
+// We tried @distube/ytdl-core first but it can't keep up with YouTube's
+// frequent player-script changes; the URLs it produced were rejected by
+// YouTube with HTTP 403 because the signature deciphering had silently
+// broken. `yt-dlp` updates almost daily and handles deciphering correctly,
+// so we shell out to it instead.
+//
+// Requirements
+//   - `yt-dlp` must be on PATH (winget install yt-dlp / pip install yt-dlp /
+//     or the binary from https://github.com/yt-dlp/yt-dlp/releases)
+//   - In Docker we install yt-dlp via apt/curl (see server/Dockerfile)
+
+import { spawn } from "node:child_process";
+
+import type { SearchResult } from "./types.js";
+
+export type YouTubeAudioInfo = {
+  streamUrl: string;
+  title: string;
+  duration: number;
+  thumbnail?: string;
+};
+
+const YT_HOST_REGEX = /^(www\.|m\.|music\.)?(youtube\.com|youtu\.be)$/i;
+
+export function looksLikeYouTube(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return YT_HOST_REGEX.test(host);
+  } catch {
+    return false;
+  }
+}
+
+const RESOLVE_TIMEOUT_MS = 30_000;
+
+// In-memory LRU-ish cache for resolved YouTube URLs.
+//   - Same URL pasted by multiple users → only one yt-dlp call
+//   - Signed URLs from googlevideo last ~6h; we cache for 5min (safe margin)
+//   - Coalesces concurrent requests for the same URL (in-flight Promise)
+const CACHE_TTL_MS = 5 * 60_000;
+const CACHE_MAX = 200;
+
+type CacheEntry = {
+  expiresAt: number;
+  info: YouTubeAudioInfo;
+};
+
+const resolvedCache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<YouTubeAudioInfo>>();
+
+function getCached(url: string): YouTubeAudioInfo | null {
+  const entry = resolvedCache.get(url);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    resolvedCache.delete(url);
+    return null;
+  }
+  // LRU bump: re-set to push to end of insertion order
+  resolvedCache.delete(url);
+  resolvedCache.set(url, entry);
+  return entry.info;
+}
+
+function setCached(url: string, info: YouTubeAudioInfo): void {
+  // Evict oldest if over capacity (Map iterates in insertion order)
+  while (resolvedCache.size >= CACHE_MAX) {
+    const firstKey = resolvedCache.keys().next().value;
+    if (firstKey === undefined) break;
+    resolvedCache.delete(firstKey);
+  }
+  resolvedCache.set(url, {
+    expiresAt: Date.now() + CACHE_TTL_MS,
+    info,
+  });
+}
+
+// ============================================================================
+// Search — separate cache so a popular query stays warm without crowding out
+// resolved audio URLs and vice-versa. 30-min TTL since search results are
+// stable for hours (titles don't change), and a single yt-dlp ytsearch run
+// costs 3–8 seconds we don't want to pay twice.
+// ============================================================================
+
+const SEARCH_CACHE_TTL_MS = 30 * 60_000;
+const SEARCH_CACHE_MAX = 100;
+const SEARCH_TIMEOUT_MS = 30_000;
+
+type SearchCacheEntry = { expiresAt: number; results: SearchResult[] };
+const searchCache = new Map<string, SearchCacheEntry>();
+const searchInFlight = new Map<string, Promise<SearchResult[]>>();
+
+function searchKey(query: string): string {
+  return query.toLowerCase().trim();
+}
+
+function getSearchCached(key: string): SearchResult[] | null {
+  const entry = searchCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    searchCache.delete(key);
+    return null;
+  }
+  searchCache.delete(key);
+  searchCache.set(key, entry); // LRU bump
+  return entry.results;
+}
+
+function setSearchCached(key: string, results: SearchResult[]): void {
+  while (searchCache.size >= SEARCH_CACHE_MAX) {
+    const k = searchCache.keys().next().value;
+    if (k === undefined) break;
+    searchCache.delete(k);
+  }
+  searchCache.set(key, {
+    expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+    results,
+  });
+}
+
+export async function searchYouTube(
+  query: string,
+  limit = 12,
+): Promise<SearchResult[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const key = searchKey(q);
+  const cached = getSearchCached(key);
+  if (cached) return cached;
+
+  const existing = searchInFlight.get(key);
+  if (existing) return existing;
+
+  const promise = runYtDlpSearch(q, limit);
+  searchInFlight.set(key, promise);
+  try {
+    const results = await promise;
+    setSearchCached(key, results);
+    return results;
+  } finally {
+    searchInFlight.delete(key);
+  }
+}
+
+function runYtDlpSearch(
+  query: string,
+  limit: number,
+): Promise<SearchResult[]> {
+  return new Promise<SearchResult[]>((resolve, reject) => {
+    // `ytsearchN:query` → N results. `--flat-playlist` skips per-video
+    // extraction so the call returns metadata only — ~10× faster than the
+    // alternative. `-j` dumps one JSON object per line.
+    const proc = spawn("yt-dlp", [
+      `ytsearch${limit}:${query}`,
+      "--flat-playlist",
+      "-j",
+      "--no-warnings",
+    ]);
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        proc.kill();
+      } catch {}
+      reject(new Error(`yt-dlp search ใช้เวลานานเกิน ${SEARCH_TIMEOUT_MS / 1000}s`));
+    }, SEARCH_TIMEOUT_MS);
+
+    proc.stdout.on("data", (c: Buffer) => (stdout += c.toString()));
+    proc.stderr.on("data", (c: Buffer) => (stderr += c.toString()));
+
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err.code === "ENOENT") {
+        reject(new Error("ยังไม่ได้ติดตั้ง yt-dlp บน server"));
+      } else {
+        reject(err);
+      }
+    });
+
+    proc.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+
+      if (code !== 0) {
+        const errLine =
+          stderr
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .find((l) => l.startsWith("ERROR:")) ?? stderr.slice(0, 300);
+        reject(new Error(errLine.trim() || `yt-dlp search exit ${code}`));
+        return;
+      }
+
+      const lines = stdout.split(/\r?\n/).filter((l) => l.trim());
+      const results: SearchResult[] = [];
+      for (const line of lines) {
+        try {
+          const info = JSON.parse(line) as Record<string, unknown>;
+          const id = typeof info.id === "string" ? info.id : null;
+          if (!id) continue;
+          const title =
+            typeof info.title === "string" && info.title.length > 0
+              ? info.title
+              : id;
+          const artist =
+            (typeof info.channel === "string" && info.channel) ||
+            (typeof info.uploader === "string" && info.uploader) ||
+            undefined;
+          const duration =
+            typeof info.duration === "number" ? Math.round(info.duration) : 0;
+          let thumbnail: string | undefined;
+          if (Array.isArray(info.thumbnails) && info.thumbnails.length > 0) {
+            const last = info.thumbnails[info.thumbnails.length - 1];
+            if (last && typeof last === "object" && "url" in last) {
+              const u = (last as { url: unknown }).url;
+              if (typeof u === "string") thumbnail = u;
+            }
+          }
+          if (!thumbnail) {
+            // Reliable fallback: YouTube always serves hqdefault for any video id
+            thumbnail = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+          }
+          results.push({
+            id,
+            source: "youtube",
+            url: `https://www.youtube.com/watch?v=${id}`,
+            title,
+            artist,
+            duration,
+            thumbnail,
+          });
+        } catch {
+          /* skip malformed line */
+        }
+      }
+      resolve(results);
+    });
+  });
+}
+
+export async function resolveYouTubeAudio(
+  url: string,
+): Promise<YouTubeAudioInfo> {
+  if (!looksLikeYouTube(url)) {
+    throw new Error("ลิงก์ไม่ใช่ YouTube");
+  }
+
+  // Cache hit — instant
+  const cached = getCached(url);
+  if (cached) return cached;
+
+  // Coalesce concurrent resolves of the same URL
+  const existing = inFlight.get(url);
+  if (existing) return existing;
+
+  const promise = runYtDlp(url);
+  inFlight.set(url, promise);
+  try {
+    const info = await promise;
+    setCached(url, info);
+    return info;
+  } finally {
+    inFlight.delete(url);
+  }
+}
+
+function runYtDlp(url: string): Promise<YouTubeAudioInfo> {
+  return new Promise<YouTubeAudioInfo>((resolve, reject) => {
+    // -j        → dump JSON metadata to stdout (includes the resolved URL
+    //             for the format selected by -f)
+    // -f        → format selector: prefer m4a (iOS-friendly), fall back to
+    //             any best audio-only, then any best with audio
+    // --no-warnings / --no-playlist for clean output
+    const proc = spawn("yt-dlp", [
+      "-j",
+      "-f",
+      "bestaudio[ext=m4a]/bestaudio/best",
+      "--no-warnings",
+      "--no-playlist",
+      url,
+    ]);
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        proc.kill();
+      } catch {}
+      reject(new Error(`yt-dlp ใช้เวลานานเกิน ${RESOLVE_TIMEOUT_MS / 1000}s`));
+    }, RESOLVE_TIMEOUT_MS);
+
+    proc.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err.code === "ENOENT") {
+        reject(
+          new Error(
+            "ยังไม่ได้ติดตั้ง yt-dlp บน server (winget install yt-dlp)",
+          ),
+        );
+      } else {
+        reject(err);
+      }
+    });
+
+    proc.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+
+      if (code !== 0) {
+        const errLine =
+          stderr
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .find((l) => l.startsWith("ERROR:")) ?? stderr.slice(0, 300);
+        reject(new Error(errLine.trim() || `yt-dlp exit ${code}`));
+        return;
+      }
+
+      let info: Record<string, unknown>;
+      try {
+        info = JSON.parse(stdout);
+      } catch (e) {
+        reject(
+          new Error(
+            "yt-dlp JSON ผิดรูปแบบ: " +
+              (e instanceof Error ? e.message : String(e)),
+          ),
+        );
+        return;
+      }
+
+      const streamUrl =
+        typeof info.url === "string" ? info.url : undefined;
+      if (!streamUrl) {
+        reject(new Error("yt-dlp ไม่คืน URL"));
+        return;
+      }
+
+      const title =
+        typeof info.title === "string" ? info.title : "Unknown";
+      const duration =
+        typeof info.duration === "number" ? Math.round(info.duration) : 0;
+
+      // Pick the highest-quality thumbnail. yt-dlp gives `thumbnails` (array,
+      // sorted lowest→highest in most cases) and a top-level `thumbnail`.
+      let thumbnail: string | undefined;
+      if (Array.isArray(info.thumbnails) && info.thumbnails.length > 0) {
+        const last = info.thumbnails[info.thumbnails.length - 1];
+        if (last && typeof last === "object" && "url" in last) {
+          const u = (last as { url: unknown }).url;
+          if (typeof u === "string") thumbnail = u;
+        }
+      }
+      if (!thumbnail && typeof info.thumbnail === "string") {
+        thumbnail = info.thumbnail;
+      }
+
+      resolve({ streamUrl, title, duration, thumbnail });
+    });
+  });
+}

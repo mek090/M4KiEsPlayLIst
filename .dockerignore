@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/.git
+**/.env
+**/.env.local
+**/*.log
+
+# Don't ship the Tauri remnants if anyone restores them
+src-tauri
+
+# Editor/OS clutter
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
