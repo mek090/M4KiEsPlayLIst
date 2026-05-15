@@ -1,0 +1,19 @@
+# Render.com auto-config. When connected to a GitHub repo, Render reads this
+# and provisions the service without manual UI clicking.
+#
+# Notes
+#   - Free tier: 512 MB RAM, sleeps after 15 min idle (~30-60s cold start).
+#   - PORT is injected by Render; our server already reads process.env.PORT.
+#   - STATIC_DIR is baked in the Dockerfile (ENV STATIC_DIR=/app/dist).
+#   - Singapore region = lowest latency for Thai users.
+
+services:
+  - type: web
+    name: m4kies-room
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: .
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    autoDeploy: true
