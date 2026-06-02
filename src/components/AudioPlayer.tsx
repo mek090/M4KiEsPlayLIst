@@ -264,10 +264,13 @@ export default function AudioPlayer({
           value={scrubbing ?? currentTime}
           disabled={!duration}
           onChange={(e) => handleScrubChange(parseFloat(e.target.value))}
-          onMouseUp={(e) =>
+          // Commit on pointer release (mouse/touch/pen) AND on key release, so
+          // keyboard users (arrow keys) don't leave `scrubbing` stuck — which
+          // would otherwise freeze the room-sync effect indefinitely.
+          onPointerUp={(e) =>
             handleScrubEnd(parseFloat((e.target as HTMLInputElement).value))
           }
-          onTouchEnd={(e) =>
+          onKeyUp={(e) =>
             handleScrubEnd(parseFloat((e.target as HTMLInputElement).value))
           }
           className="seek-bar"

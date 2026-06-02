@@ -3,6 +3,7 @@ dist/
 dev-dist/
 .DS_Store
 *.log
+*.tsbuildinfo
 .env
 .env.local
 
@@ -16,3 +17,6 @@ server/node_modules/
 # Editors
 .vscode/
 .idea/
+
+# Claude Code local agent state (worktrees, settings)
+.claude/

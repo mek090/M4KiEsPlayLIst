@@ -6,9 +6,13 @@
   "description": "M4KiEs PlayLIst — PWA listening room. Listen to music together on any device.",
   "scripts": {
     "dev": "vite",
+    "dev:all": "concurrently -k -n client,server -c magenta,cyan \"npm run dev\" \"npm --prefix server run dev\"",
     "build": "tsc -b && vite build",
+    "build:all": "npm run build && npm --prefix server run build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit"
+    "start": "npm --prefix server start",
+    "typecheck": "tsc -b --noEmit",
+    "install:all": "npm install && npm --prefix server install"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -18,6 +22,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^10.0.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "vite-plugin-pwa": "^0.21.1"

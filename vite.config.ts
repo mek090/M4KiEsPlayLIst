@@ -43,6 +43,9 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    // Listen on all interfaces so you can open the dev URL from a phone on the
+    // same WiFi (e.g. http://192.168.1.x:5173). Vite prints the Network URL.
+    host: true,
     proxy: {
       "/ws": {
         target: "ws://localhost:3000",

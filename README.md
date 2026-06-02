@@ -68,51 +68,51 @@ M4KiEsPlayLIst/              ← PWA web app (root)
   - Linux: `pip install yt-dlp` หรือ curl binary จาก https://github.com/yt-dlp/yt-dlp/releases
   - Docker (`server/Dockerfile`) ติดตั้งให้อัตโนมัติแล้ว
 
+> **Windows**: หลัง `winget install yt-dlp.yt-dlp` ครั้งแรก ต้อง **เปิด terminal ใหม่** ก่อน เพื่อให้ PATH อัปเดต (ไม่งั้น server จะ log `[yt-dlp] ⚠ NOT FOUND`)
+
 ถ้าวันนึง YouTube พัง: `yt-dlp -U` (เครื่องคุณ) หรือ rebuild Docker image (cloud)
 
 ## รัน local
 
-ต้องเปิด 2 terminal — server กับ client
-
-### Terminal 1 — server (port 3000)
+### วิธีเร็วสุด — คำสั่งเดียว รัน server + client พร้อมกัน
 
 ```powershell
-cd server
-npm install     # ครั้งแรกเท่านั้น
-npm run dev
+npm run install:all    # ครั้งแรกเท่านั้น — ลง dependency ทั้ง root + server
+npm run dev:all        # รัน client (:5173) + server (:3000) พร้อมกันด้วย concurrently
 ```
 
-ควรเห็น `🎀 M4KiEs Room server up on 0.0.0.0:3000`
+เปิด http://localhost:5173 — Vite จะ proxy `/ws` กับ `/api` ไป server :3000 ให้อัตโนมัติ
 
-### Terminal 2 — client (port 5173)
+ดู log ควรเห็น:
+- `[server] 🎀 M4KiEs Room server up on 0.0.0.0:3000`
+- `[server] [yt-dlp] ready (v...)`  ← yt-dlp พร้อมใช้แล้ว
+- `[client] ➜ Local: http://localhost:5173/`
+
+### หรือแยก 2 terminal (ถ้าอยากเห็น log แยกกัน)
 
 ```powershell
-npm install     # ครั้งแรกเท่านั้น (รันที่ root)
+# Terminal 1 — server (:3000)
+npm --prefix server run dev
+
+# Terminal 2 — client (:5173)
 npm run dev
 ```
-
-ควรเห็น `Local: http://localhost:5173/`
-
-เปิด http://localhost:5173 ในเบราว์เซอร์ — Vite จะ proxy `/ws` กับ `/api` ไปที่ server :3000 ให้
 
 ### ทดสอบ multi-user
 
-- เปิดหลายๆ tab (หรือ incognito) → ทุก tab สร้าง / เข้าห้องเดียวกัน → กด play ใน tab หนึ่ง ทุก tab ควรเล่นพร้อมกัน
-- หรือเปิดบนมือถือใน WiFi เดียวกัน: ใช้ IP ของเครื่อง dev เช่น `http://192.168.1.x:5173` (อาจต้องแก้ Vite host ใน vite.config.ts ให้เปิด `host: true`)
+- เปิดหลายๆ tab (หรือ incognito) → เข้าห้องเดียวกัน → กด play ใน tab หนึ่ง ทุก tab ควรเล่นพร้อมกัน
+- บนมือถือใน WiFi เดียวกัน: ใช้ **Network URL** ที่ Vite print ออกมา เช่น `http://192.168.1.x:5173` (`host: true` เปิดไว้ใน vite.config.ts แล้ว — ใช้ได้เลยไม่ต้องแก้)
 
 ---
 
 ## Build production
 
 ```powershell
-# client (รันที่ root)
-npm run build           # output: dist/
-
-# server
-cd server
-npm run build           # output: server/dist/
-npm start               # serves ../dist + WebSocket on :3000
+npm run build:all   # build client (→ dist/) + server (→ server/dist/) ในคำสั่งเดียว
+npm start           # server serve dist/ ที่ build ไว้ + WebSocket บน :3000
 ```
+
+เปิด http://localhost:3000 — ตอนนี้ server เสิร์ฟทั้ง client (static) และ WebSocket จาก port เดียว
 
 ---
 
@@ -240,7 +240,7 @@ effective_position = position
                    + (Date.now() - stateArrivedAt)  / 1000    // client-side elapsed
 ```
 
-ทั้งสองเทอม subtract ค่าจากนาฬิกาเดียวกัน → ทนต่อ clock skew ระหว่าง client/server (เครื่องเวลาไม่ตรงก็ยังถูก) Threshold 1.5s — ถ้า drift เกินนี้ค่อย `seekTo()` กลับ
+ทั้งสองเทอม subtract ค่าจากนาฬิกาเดียวกัน → ทนต่อ clock skew ระหว่าง client/server (เครื่องเวลาไม่ตรงก็ยังถูก) Threshold 1.0s — ถ้า drift เกินนี้ค่อย `seekTo()` กลับ
 
 ---
 

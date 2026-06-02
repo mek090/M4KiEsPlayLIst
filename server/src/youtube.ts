@@ -52,6 +52,30 @@ function ytDlpArgs(...rest: string[]): string[] {
   return args;
 }
 
+// Startup probe: confirm yt-dlp is actually callable. Without it, YouTube
+// search AND playback silently fail per-request with a Thai error — this turns
+// the #1 setup gotcha into one clear, actionable log line at boot.
+export function probeYtDlp(): void {
+  const proc = spawn("yt-dlp", ytDlpArgs("--version"));
+  let version = "";
+  proc.stdout.on("data", (c: Buffer) => (version += c.toString()));
+  proc.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") {
+      console.warn(
+        "[yt-dlp] ⚠ NOT FOUND on PATH — YouTube search & playback will fail.\n" +
+          "         Install it:  winget install yt-dlp.yt-dlp  (Windows)\n" +
+          "                      brew install yt-dlp           (macOS)\n" +
+          "                      pip install -U yt-dlp         (Linux)",
+      );
+    } else {
+      console.warn(`[yt-dlp] ⚠ probe failed: ${err.message}`);
+    }
+  });
+  proc.on("close", (code) => {
+    if (code === 0) console.log(`[yt-dlp] ready (v${version.trim()})`);
+  });
+}
+
 export type YouTubeAudioInfo = {
   streamUrl: string;
   title: string;

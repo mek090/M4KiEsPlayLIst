@@ -32,7 +32,7 @@ import type {
   ServerMessage,
   Track,
 } from "./types.js";
-import { resolveYouTubeAudio, searchYouTube } from "./youtube.js";
+import { probeYtDlp, resolveYouTubeAudio, searchYouTube } from "./youtube.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
@@ -280,7 +280,8 @@ async function handleMessage(connId: string, msg: ClientMessage): Promise<void> 
         room.position = 0;
       }
       touchPosition(room);
-      room.playing = true;
+      // Don't claim "playing" when there's nothing to play (empty queue).
+      room.playing = room.currentIdx !== -1;
       sendState(conn.roomId);
       return;
     }
@@ -394,6 +395,7 @@ async function start(): Promise<void> {
   await fastify.listen({ port: PORT, host: HOST });
   fastify.log.info(`🎀 M4KiEs Room server up on ${HOST}:${PORT}`);
   fastify.log.info(`static dir: ${STATIC_DIR}`);
+  probeYtDlp();
 }
 
 start().catch((err) => {
