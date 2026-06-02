@@ -76,6 +76,77 @@ export function probeYtDlp(): void {
   });
 }
 
+// TEMP diagnostic (remove after POT debugging): observe, from OUTSIDE, whether
+// the in-container bgutil PO-token provider is up and whether yt-dlp actually
+// fetches/uses a token when YouTube challenges on a datacenter IP.
+export async function potDiagnostics(): Promise<Record<string, unknown>> {
+  const result: Record<string, unknown> = {};
+
+  // 1. Is the local bgutil provider reachable?
+  try {
+    const r = await fetch("http://127.0.0.1:4416/ping", {
+      signal: AbortSignal.timeout(5000),
+    });
+    result.provider = {
+      ok: r.ok,
+      status: r.status,
+      body: (await r.text()).slice(0, 200),
+    };
+  } catch (e) {
+    result.provider = { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // 2. Run a verbose resolve and surface the POT-relevant debug lines + the
+  //    final ERROR (if any). BaW_jenozKc = yt-dlp's own test video.
+  result.ytdlp = await new Promise((resolve) => {
+    const proc = spawn(
+      "yt-dlp",
+      ytDlpArgs(
+        "-v",
+        "--simulate",
+        "-f",
+        "bestaudio[ext=m4a]/bestaudio/best",
+        "https://www.youtube.com/watch?v=BaW_jenozKc",
+      ),
+    );
+    let err = "";
+    proc.stderr.on("data", (c: Buffer) => (err += c.toString()));
+    proc.stdout.on("data", () => {});
+    const keep = (l: string) =>
+      /pot|bgutil|Retrieved|PO Token|Sign in to confirm|Plugin directories/i.test(
+        l,
+      );
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {}
+      resolve({
+        timedOut: true,
+        potLines: err.split(/\r?\n/).filter(keep).slice(0, 40),
+      });
+    }, 45000);
+    proc.on("error", (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolve({ spawnError: e.message });
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      const errorLine =
+        err
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find((l) => l.startsWith("ERROR:")) ?? "";
+      resolve({
+        exitCode: code,
+        errorLine: errorLine.slice(0, 300),
+        potLines: err.split(/\r?\n/).filter(keep).slice(0, 40),
+      });
+    });
+  });
+
+  return result;
+}
+
 export type YouTubeAudioInfo = {
   streamUrl: string;
   title: string;

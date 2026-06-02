@@ -32,7 +32,12 @@ import type {
   ServerMessage,
   Track,
 } from "./types.js";
-import { probeYtDlp, resolveYouTubeAudio, searchYouTube } from "./youtube.js";
+import {
+  potDiagnostics,
+  probeYtDlp,
+  resolveYouTubeAudio,
+  searchYouTube,
+} from "./youtube.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
@@ -343,6 +348,10 @@ async function start(): Promise<void> {
 
   // Health check (useful for Fly.io / Railway)
   fastify.get("/api/health", async () => ({ ok: true }));
+
+  // TEMP: PO-token diagnostics (remove after debugging) — lets us see from
+  // outside whether the bgutil provider is up and whether yt-dlp uses a token.
+  fastify.get("/api/debug/pot", async () => potDiagnostics());
 
   await fastify.register(async (instance) => {
     instance.get<{ Querystring: { roomId?: string } }>(
